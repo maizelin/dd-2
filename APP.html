@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>糖尿病用藥決策支援系統</title>
+  <script src="https://cdn.jsdelivr.net/npm/fhirclient/build/fhir-client.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: 'Microsoft JhengHei', Arial, sans-serif; background: #f0f4f8; margin: 0; padding: 20px; }
+    .container { max-width: 1100px; margin: auto; }
+    h1 { text-align: center; color: #2c3e50; }
+    .status-bar { text-align: center; background: #e8f6f3; padding: 10px; border-radius: 8px; color: #16a085; margin-bottom: 20px; border: 1px solid #16a085; }
+    .patient-selector { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; margin-bottom: 40px; }
+    .patient-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); cursor: pointer; transition: 0.3s; border-top: 5px solid #3498db; }
+    .patient-card:hover { transform: translateY(-5px); box-shadow: 0 10px 25px rgba(0,0,0,0.15); }
+    .patient-card h3 { margin: 0 0 10px 0; color: #2c3e50; }
+    .content { display: none; background: white; border-radius: 12px; padding: 30px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: relative; }
+    .back-btn { position: absolute; top: 20px; left: 20px; background: #95a5a6; color: white; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
+    canvas { max-height: 300px; width: 100%; margin: 20px 0; }
+    .indicators { display: flex; justify-content: space-around; flex-wrap: wrap; gap: 20px; margin: 30px 0; }
+    .indicator-box { text-align: center; min-width: 150px; padding: 15px; background: #f8f9fa; border-radius: 10px; }
+    .bar { height: 40px; border-radius: 8px; line-height: 40px; color: white; font-weight: bold; font-size: 1.2em; margin-top: 10px; }
+    .green { background: #27ae60; } .yellow { background: #f39c12; } .red { background: #e74c3c; }
+    .rec-item { background: #f1f8ff; padding: 15px; border-left: 5px solid #3498db; margin: 10px 0; border-radius: 4px; }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <h1>糖尿病用藥決策支援系統 (CDS)</h1>
+    
+    <div id="smartStatus" class="status-bar" style="display:none;"></div>
+
+    <div id="selectorSection">
+      <h2 style="color:#34495e;">請選擇測試個案 (依據病人資訊.docx)</h2>
+      <div class="patient-selector" id="patientSelector"></div>
+    </div>
+
+    <div class="content" id="patientContent">
+      <button class="back-btn" onclick="location.reload()">← 返回列表</button>
+      <h2 id="patientHeader" style="text-align:center; color:#2980b9;"></h2>
+      
+      <div style="display:flex; justify-content: space-around; color:#7f8c8d; margin-bottom:20px;">
+        <span id="txtID"></span>
+        <span id="txtScenario"></span>
+      </div>
+
+      <canvas id="hba1cChart"></canvas>
+
+      <div class="indicators" id="indicators"></div>
+
+      <div class="recommendations">
+        <h3>💡 ADA 2025 個人化建議</h3>
+        <div id="recommendationsList"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // === 核心資料庫：對應「病人資訊.docx」===
+    const testPatients = [
+      { id: "683785", name: "陳志明", age: 45, gender: "男", scenario: "年輕新診斷，快速改善", target: 7.0, latestHba1c: 7.1, egfr: 90, bmi: 27 },
+      { id: "683813", name: "王小明", age: 62, gender: "男", scenario: "糖尿病合併中度腎病變", target: 7.5, latestHba1c: 7.6, egfr: 45, bmi: 26 },
+      { id: "683847", name: "林阿花", age: 65, gender: "女", scenario: "高齡多共病，目標放寬", target: 8.0, latestHba1c: 7.5, egfr: 55, bmi: 22 },
+      { id: "683882", name: "張家豪", age: 40, gender: "男", scenario: "年輕肥胖，反彈後明顯改善", target: 7.0, latestHba1c: 6.1, egfr: 95, bmi: 33 },
+      { id: "684487", name: "李怡君", age: 52, gender: "女", scenario: "控制良好，可考慮減藥", target: 7.0, latestHba1c: 5.8, egfr: 100, bmi: 21 }
+    ];
+
+    let myChart = null;
+
+    // 啟動時偵測 SMART Context
+    window.onload = function() {
+      renderList();
+      
+      FHIR.oauth2.ready().then(client => {
+        const statusDiv = document.getElementById('smartStatus');
+        statusDiv.style.display = 'block';
+        statusDiv.innerHTML = `🧬 已與 THAS FHIR Server 連線 (當前病人 ID: ${client.patient.id})`;
+        
+        const matched = testPatients.find(p => p.id === client.patient.id);
+        if(matched) loadPatient(matched);
+      }).catch(err => console.log("展示模式：未偵測到 EHR 啟動環境"));
+    };
+
+    function renderList() {
+      const html = testPatients.map(p => `
+        <div class="patient-card" onclick='loadPatientById("${p.id}")'>
+          <h3>${p.name} (${p.gender}, ${p.age}歲)</h3>
+          <p><strong>情境：</strong>${p.scenario}</p>
+          <p>最新 HbA1c: ${p.latestHba1c}% / 目標: ${p.target}%</p>
+        </div>
+      `).join('');
+      document.getElementById('patientSelector').innerHTML = html;
+    }
+
+    function loadPatientById(id) {
+      const p = testPatients.find(item => item.id === id);
+      if(p) loadPatient(p);
+    }
+
+    function loadPatient(p) {
+      document.getElementById('selectorSection').style.display = 'none';
+      document.getElementById('patientContent').style.display = 'block';
+      document.getElementById('patientHeader').innerText = `${p.name} 臨床臨床決策儀表板`;
+      document.getElementById('txtID').innerText = `病人 ID: ${p.id}`;
+      document.getElementById('txtScenario').innerText = `臨床情境: ${p.scenario}`;
+
+      renderChart(p);
+      renderIndicators(p);
+      renderCDS(p);
+    }
+
+    function renderChart(p) {
+      const ctx = document.getElementById('hba1cChart').getContext('2d');
+      if (myChart) myChart.destroy();
+      
+      // 模擬 24 個月的趨勢 (由高往低降)
+      const mockTrend = Array.from({length: 24}, (_, i) => (p.latestHba1c + (24-i)*0.1).toFixed(1));
+      mockTrend.push(p.latestHba1c);
+
+      myChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: Array.from({length: 25}, (_, i) => `M-${24-i}`),
+          datasets: [{
+            label: 'HbA1c趨勢 (%)',
+            data: mockTrend,
+            borderColor: '#3498db',
+            tension: 0.3,
+            fill: true,
+            backgroundColor: 'rgba(52, 152, 219, 0.1)'
+          }, {
+            label: '個人化目標值',
+            data: Array(25).fill(p.target),
+            borderColor: '#e74c3c',
+            borderDash: [5, 5],
+            pointRadius: 0
+          }]
+        }
+      });
+    }
+
+    function renderIndicators(p) {
+      const getHColor = v => v <= p.target ? 'green' : (v <= p.target + 0.5 ? 'yellow' : 'red');
+      const getEColor = v => v >= 60 ? 'green' : (v >= 30 ? 'yellow' : 'red');
+      const getBColor = v => v < 27 ? 'green' : 'red';
+
+      document.getElementById('indicators').innerHTML = `
+        <div class="indicator-box"><div>HbA1c</div><div class="bar ${getHColor(p.latestHba1c)}">${p.latestHba1c}%</div><small>目標: ${p.target}%</small></div>
+        <div class="indicator-box"><div>eGFR</div><div class="bar ${getEColor(p.egfr)}">${p.egfr}</div><small>腎功能指標</small></div>
+        <div class="indicator-box"><div>BMI</div><div class="bar ${getBColor(p.bmi)}">${p.bmi}</div><small>肥胖評估</small></div>
+      `;
+    }
+
+    function renderCDS(p) {
+      let html = "";
+      if (p.latestHba1c > p.target) html += `<div class="rec-item">🔴 <strong>血糖尚未達標：</strong>建議加強生活型態調整，並檢視是否需調整 Metformin 劑量。</div>`;
+      else html += `<div class="rec-item" style="border-left-color:green;">🟢 <strong>血糖控制達標：</strong>請維持現有治療計畫，定期追蹤。</div>`;
+
+      if (p.egfr < 60) html += `<div class="rec-item">💊 <strong>器官保護建議：</strong>偵測到腎功能受損 (eGFR ${p.egfr})，依據 ADA 2025 指引，優先建議使用 <strong>SGLT2 抑制劑</strong>。</div>`;
+      
+      if (p.bmi >= 27) html += `<div class="rec-item">⚖️ <strong>體重管理建議：</strong>BMI 達 ${p.bmi}，建議考慮使用具減重效益之 <strong>GLP-1 RA</strong>。</div>`;
+      
+      if (p.latestHba1c < 6.0) html += `<div class="rec-item" style="border-left-color:#f39c12;">⚠️ <strong>低血糖風險：</strong>HbA1c 低於 6.0%，若有使用藥物請評估減藥可能性。</div>`;
+
+      document.getElementById('recommendationsList').innerHTML = html;
+    }
+  </script>
+</body>
+</html>

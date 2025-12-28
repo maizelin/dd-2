@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>糖尿病用藥決策支援系統 - Launch</title>
+    <script src="https://cdn.jsdelivr.net/npm/fhirclient/build/fhir-client.js"></script>
+</head>
+<body>
+    <script>
+        FHIR.oauth2.authorize({
+            // 1. Client ID: 需與 FHIR Server 註冊的一致
+            "clientId": "diabetes-cdss-app", 
+
+            // 2. Scopes: 請求權限，包含 launch (EHR啟動上下文) 與 patient (讀取當前病人)
+            "scope": "launch patient/*.read openid fhirUser", 
+
+            // 3. Redirect URI: 修正為 app.html (請確認您的主程式檔名也是 app.html)
+            "redirectUri": "app.html", 
+
+            // 4. Iss: 在測試環境若未由 EHR 帶入，可手動指定 (例如: "https://launch.smarthealthit.org/v/r4/sim/WzIsIiIsIiIs"AUTO"XQ/fhir")
+            // "completeInTarget": true // 視情況開啟，通常設為 false 以利標準跳轉
+        });
+    </script>
+    <p>正在重新導向至授權頁面...</p>
+</body>
+</html>
